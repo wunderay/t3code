@@ -1,8 +1,9 @@
-# Adds the Android app to every fork release (wunderay/t3code): when
-# release.yml publishes a release, this builds one installable APK of that
-# commit (.github/scripts/fork-android-apk.sh) and uploads it to the release,
-# with its line in SHA256SUMS. The official repository ships Android through
-# Google Play and never runs this.
+# Adds the Android app to every fork release (wunderay/t3code): fork-release.yml
+# starts this for the tag it made, beside release.yml. It builds one installable
+# APK of that tag (.github/scripts/fork-android-apk.sh), waits for the release
+# to be published, and uploads the APK with its line in SHA256SUMS. Start it by
+# hand to add an APK to an older release. The official repository ships Android
+# through Google Play and never runs this.
 #
 # Signing secrets, optional: ANDROID_KEYSTORE_BASE64 (the keystore file,
 # base64), ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS. With them every
@@ -11,9 +12,6 @@
 name: Fork Android APK
 
 on:
-  workflow_run:
-    workflows: [Release]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -25,38 +23,30 @@ permissions:
   contents: write
 
 concurrency:
-  group: fork-android-apk-${{ inputs.tag || github.event.workflow_run.head_sha }}
+  group: fork-android-apk-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   apk:
     name: Build and upload the APK
-    if: github.repository != 'pingdotgg/t3code' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch'))
+    if: github.repository != 'pingdotgg/t3code'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # The build, then the wait for release.yml, which queues behind earlier
+    # stable releases; 360 minutes is a hosted runner's limit.
+    timeout-minutes: 360
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      # fork-release.yml tags the commit CI passed and dispatches release.yml at
-      # main, which is that commit, so the release's tag points at the run's head.
       - id: release
-        name: Find the release
+        name: Check the tag
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ -z "$TAG" ]; then
-            # Every tag, not one page: the tags API does not list the newest first.
-            TAG=$(gh api --paginate "repos/$GH_REPO/git/matching-refs/tags/v" \
-              --jq ".[] | select(.object.sha == \"$SHA\") | .ref | ltrimstr(\"refs/tags/\")" |
-              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
-            [ -n "$TAG" ] || { echo "No stable tag points at $SHA; nothing to add an APK to."; exit 0; }
-          fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a stable fork tag"; exit 1; }
-          gh release view "$TAG" --json isDraft --jq .isDraft | grep -qx false ||
-            { echo "::error::$TAG has no published release"; exit 1; }
-          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -q -- '\.apk$'; then
+          gh api "repos/$GH_REPO/git/ref/tags/$TAG" --silent || { echo "::error::no tag $TAG"; exit 1; }
+          # No release yet is normal: release.yml is still building it.
+          if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -q -- '\.apk$'; then
             echo "$TAG already has an APK."
             exit 0
           fi
@@ -144,6 +134,16 @@ jobs:
           KEY: ${{ steps.build.outputs.key }}
         run: |
           cd "$(dirname "$APK")"
+          # release.yml publishes the release with SHA256SUMS as its last step.
+          for _ in $(seq 270); do
+            if gh release view "$TAG" --json isDraft,assets \
+              --jq 'select(.isDraft == false) | .assets[].name' 2>/dev/null | grep -qx SHA256SUMS; then
+              break
+            fi
+            sleep 60
+          done
+          gh release view "$TAG" --json isDraft --jq .isDraft | grep -qx false ||
+            { echo "::error::$TAG was not published in time; start this again once it is."; exit 1; }
           gh release upload "$TAG" "$NAME" --clobber
           # SHA256SUMS lists every asset; add the APK's line, replacing an old one.
           # A failed download must stop here, or the upload would drop every other line.

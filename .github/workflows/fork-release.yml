@@ -66,3 +66,15 @@ jobs:
               throw error;
             }
             core.notice(`Started release.yml for v${version} at ${sha}.`);
+            // The APK build runs beside the release and waits for it to upload. A workflow_run
+            // trigger never fires here: release.yml was started with GITHUB_TOKEN.
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo,
+                workflow_id: 'fork-android-apk.yml',
+                ref: branch,
+                inputs: { tag: `v${version}` },
+              });
+            } catch (error) {
+              core.warning(`v${version} gets no APK: fork-android-apk.yml did not start (${error.message}).`);
+            }
