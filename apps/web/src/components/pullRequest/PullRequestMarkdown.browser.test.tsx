@@ -1,5 +1,6 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { type AssetResource, EnvironmentId } from "@t3tools/contracts";
+import { DEFAULT_PRIVACY_PREFERENCES, setPrivacyPreferences } from "@t3tools/shared/privacy";
 import { expect, it, vi } from "vite-plus/test";
 
 import { render } from "../../../test/render";
@@ -16,6 +17,8 @@ vi.mock(import("~/assets/assetUrls"), async (original) => ({
 
 function setup() {
   requested.length = 0;
+  // Host media loads only where the user allows remote media.
+  setPrivacyPreferences({ ...DEFAULT_PRIVACY_PREFERENCES, remoteMedia: true });
 }
 
 async function renderBody(

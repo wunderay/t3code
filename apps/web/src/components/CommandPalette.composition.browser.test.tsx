@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
-import { AuthOrchestrationOperateScope, AuthSourceControlWriteScope } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
+  DEFAULT_COORDINATOR_LABELS,
+} from "@t3tools/contracts";
 import { act, render } from "../../test/render";
 import { CommandPalette } from "./CommandPalette";
 import { openCommandPalette } from "../commandPaletteBus";
@@ -125,6 +129,11 @@ vi.mock("../state/filesystem", async (original) => ({
 vi.mock("../state/query", async (original) => ({
   ...(await original<typeof import("../state/query")>()),
   useEnvironmentQuery: () => ({ data: scopes.sourceControl, isLoading: false }),
+}));
+// The query mock above answers every query with source control's, the Coordinator's included.
+vi.mock("./settings/CoordinatorBoundary", () => ({
+  useCoordinatorThread: () => null,
+  useCoordinatorLabels: () => DEFAULT_COORDINATOR_LABELS,
 }));
 vi.mock("./settings/useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [],

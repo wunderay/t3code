@@ -2311,14 +2311,18 @@ const make = Effect.gen(function* () {
             }),
       ),
     );
+    // The thread's own protection decides its own git folders and what lies in them; Docker
+    // also refuses a folder mounted twice.
+    const ownGit = (entry: string) =>
+      own.some((folder) => entry === folder || entry.startsWith(`${folder}${path.sep}`));
     return {
-      writable: [...writable, ...git.flatMap((entry) => entry.writable)],
+      writable: [...writable, ...git.flatMap((entry) => entry.writable)].filter(
+        (entry) => !ownGit(entry),
+      ),
       readable: yield* Effect.forEach(chosen.readableFolders, resolve("readableFolders")),
       // Another checkout of the thread's own repository would hold the thread's own git
       // folder (a worktree's, its HEAD and index) as another checkout's.
-      protected: git
-        .flatMap((entry) => entry.protected)
-        .filter((entry) => !own.some((folder) => entry.startsWith(`${folder}${path.sep}`))),
+      protected: git.flatMap((entry) => entry.protected).filter((entry) => !ownGit(entry)),
     };
   });
 

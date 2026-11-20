@@ -45,8 +45,11 @@ const installed = (command: string) => {
   return found.status === 0 ? found.stdout.trim() : undefined;
 };
 const has = (command: string) => installed(command) !== undefined;
-const dockerRunning = () =>
-  has("docker") && NodeChildProcess.spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
+// Docker threads reach the proxy through socat on the host, so Docker without it is not a backend.
+const dockerUsable = () =>
+  has("docker") &&
+  has("socat") &&
+  NodeChildProcess.spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const srtUsable = HostProcess.Platform.defaultValue() === "linux" && has("bwrap") && has("socat");
 const hostEnv: NodeJS.ProcessEnv = { ...process.env };
 
@@ -660,4 +663,4 @@ const matrix = (backend: "srt" | "docker", usable: () => boolean) =>
   });
 
 matrix("srt", () => srtUsable);
-matrix("docker", dockerRunning);
+matrix("docker", dockerUsable);

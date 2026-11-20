@@ -5,6 +5,7 @@ import {
   type ModelSelection,
 } from "@t3tools/contracts";
 import { compileResolvedKeybindingsConfig } from "@t3tools/shared/keybindings";
+import { DEFAULT_PRIVACY_PREFERENCES, setPrivacyPreferences } from "@t3tools/shared/privacy";
 import { useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -17,6 +18,8 @@ import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 
 it("keeps each registry image when adding a model from another ACP agent", async () => {
+  // Registry icons load only where the user allows external icons.
+  setPrivacyPreferences({ ...DEFAULT_PRIVACY_PREFERENCES, externalIcons: true });
   const icons = [
     "https://cdn.agentclientprotocol.com/registry/icons/picker-explicit.svg",
     "https://cdn.agentclientprotocol.com/registry/v1/latest/picker-by-id.svg",
