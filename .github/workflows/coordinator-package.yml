@@ -1,0 +1,146 @@
+name: Coordinator Windows package
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coordinator-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      T3CODE_DESKTOP_SIGNED: "false"
+      T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true"
+      T3CODE_DESKTOP_REUSE_COORDINATOR: "true"
+      T3CODE_TELEMETRY_ENABLED: "false"
+      T3CODE_OTEL_SDK_DISABLED: "true"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Expose cached tools to Windows shells
+        shell: pwsh
+        run: |
+          $toolBin = Join-Path $env:USERPROFILE '.vite-plus/bin'
+          if (-not (Test-Path -LiteralPath $toolBin -PathType Container)) { throw 'Vite tool directory is missing.' }
+          $toolBin >> $env:GITHUB_PATH
+      - name: Check the packaged launch helper before building
+        shell: pwsh
+        run: |
+          vp fmt --check scripts/smoke-desktop-app.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          vp lint scripts/smoke-desktop-app.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Resolve isolated preview version
+        shell: pwsh
+        run: |
+          $baseVersion = (Get-Content -LiteralPath apps/server/package.json -Raw | ConvertFrom-Json).version.Split('-')[0]
+          $dateStamp = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Pacific Standard Time').ToString('yyyyMMdd')
+          "PACKAGE_VERSION=$baseVersion-preview.$dateStamp.$env:GITHUB_RUN_NUMBER" >> $env:GITHUB_ENV
+      - name: Build native companions
+        shell: pwsh
+        run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --release --manifest-path native/coordinator/Cargo.toml --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build unsigned desktop ZIP with existing packager
+        shell: pwsh
+        run: |
+          node scripts/build-desktop-artifact.ts --platform win --target zip --arch x64 --build-version $env:PACKAGE_VERSION --output-dir "$env:RUNNER_TEMP/package-output" --verbose
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Extract the built distribution
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/package-output" -Filter '*.zip' -File
+          if (@($archive).Count -ne 1) { throw 'Expected exactly one desktop ZIP.' }
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath "$env:RUNNER_TEMP/portable-coordinator"
+      - name: Smoke-test the packaged app against temporary seeded state
+        shell: pwsh
+        run: |
+          $product = (Get-Content -LiteralPath apps/desktop/package.json -Raw | ConvertFrom-Json).productName
+          node scripts/smoke-desktop-app.ts --executable "$env:RUNNER_TEMP/portable-coordinator/$product.exe" --artifacts-dir "$env:RUNNER_TEMP/desktop-launch-check" --capture-success --coordinator-guidance
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Add isolated launcher and build receipt
+        shell: pwsh
+        run: |
+          $portable = Join-Path $env:RUNNER_TEMP 'portable-coordinator'
+          $product = (Get-Content -LiteralPath apps/desktop/package.json -Raw | ConvertFrom-Json).productName
+          $launcher = @'
+          Option Explicit
+          Dim files, shell, root, profile, appData, environment
+          Set files = CreateObject("Scripting.FileSystemObject")
+          Set shell = CreateObject("WScript.Shell")
+          root = files.GetParentFolderName(WScript.ScriptFullName)
+          profile = files.BuildPath(root, "coordinator-profile")
+          If Not files.FolderExists(profile) Then files.CreateFolder(profile)
+          appData = files.BuildPath(profile, "AppData")
+          If Not files.FolderExists(appData) Then files.CreateFolder(appData)
+          Set environment = shell.Environment("PROCESS")
+          environment("T3CODE_HOME") = profile
+          environment("APPDATA") = appData
+          environment("T3_COORDINATOR_DATABASE") = files.BuildPath(files.BuildPath(profile, "userdata"), "coordinator.sqlite")
+          environment("T3CODE_DISABLE_AUTO_UPDATE") = "true"
+          environment("T3CODE_TELEMETRY_ENABLED") = "false"
+          environment("T3CODE_OTEL_SDK_DISABLED") = "true"
+          shell.CurrentDirectory = root
+          shell.Run Chr(34) & files.BuildPath(root, "__PRODUCT__.exe") & Chr(34), 1, False
+          '@
+          Set-Content -LiteralPath (Join-Path $portable 'Start-Coordinator.vbs') -Value $launcher.Replace('__PRODUCT__', $product) -Encoding utf8
+          $receipt = @{
+            sourceSha = $env:GITHUB_SHA
+            version = $env:PACKAGE_VERSION
+            workflowRun = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            unsigned = $true
+            publishedRelease = $false
+            packagedLaunchCheck = 'passed against temporary seeded state'
+            packagedGuidanceCheck = 'saved, reloaded, cleared and reloaded with coordinator disabled'
+            profile = 'coordinator-profile beside the launcher'
+            autoUpdates = 'disabled by launcher; preview has no update feed'
+            providers = 'not configured; no credentials included'
+          }
+          $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $portable 'build-receipt.json') -Encoding utf8
+          @'
+          Coordinator preview
+
+          Extract this ZIP to its own writable folder. Open Start-Coordinator.vbs.
+          The launcher uses the adjacent coordinator-profile folder and disables updates.
+          It does not replace an installed T3 application or copy credentials.
+          Configure your providers and cloud bindings before enabling coordination.
+          Native cloud capability limitations remain visible in the app.
+
+          This is an unsigned preview, not a published release or live-provider acceptance.
+          To undo: close this preview and remove its extracted folder. Keep the profile
+          folder if you want to retain its data. Your normal T3 installation is separate.
+          See build-receipt.json for the exact source and hosted startup result.
+          '@ | Set-Content -LiteralPath (Join-Path $portable 'READ-ME-FIRST.txt') -Encoding utf8
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/ready-coordinator" -Force | Out-Null
+          $output = Join-Path "$env:RUNNER_TEMP/ready-coordinator" "T3-Coordinator-$env:PACKAGE_VERSION-win-x64.zip"
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($portable, $output, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+          $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([System.IO.Path]::GetFileName($output))" | Set-Content -LiteralPath "$output.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@v6
+        with:
+          name: coordinator-windows-portable
+          path: ${{ runner.temp }}/ready-coordinator/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: coordinator-windows-launch-check
+          path: ${{ runner.temp }}/desktop-launch-check/
+          if-no-files-found: ignore

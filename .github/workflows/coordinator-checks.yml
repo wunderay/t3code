@@ -1,0 +1,179 @@
+name: Coordinator checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Git revision used for affected-source checks
+        default: origin/main
+        required: true
+        type: string
+      package_windows:
+        description: Build and smoke-test the isolated unsigned Windows distribution
+        default: false
+        required: false
+        type: boolean
+      package_only:
+        description: Build only the Windows distribution after source checks have passed
+        default: false
+        required: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coordinator-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows_package:
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && (inputs.package_windows || inputs.package_only) && (inputs.package_only || (needs.integration.result == 'success' && needs.rust.result == 'success' && needs.companion.result == 'success')) }}
+    needs: [integration, rust, companion]
+    uses: ./.github/workflows/coordinator-package.yml
+  rust:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.package_only) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Normalize Rust sources
+        shell: bash
+        run: |
+          if [[ -f native/coordinator/Cargo.toml ]]; then
+            cargo fmt --manifest-path native/coordinator/Cargo.toml
+            if [[ ! -f native/coordinator/Cargo.lock ]]; then
+              cargo generate-lockfile --manifest-path native/coordinator/Cargo.toml
+            fi
+            git diff --binary -- native/coordinator > "$RUNNER_TEMP/coordinator-rust.patch"
+          else
+            rustc --version
+            cargo --version
+            echo 'Supervisor not present in this source snapshot; toolchain check only.'
+          fi
+      - uses: actions/upload-artifact@v6
+        if: hashFiles('native/coordinator/Cargo.toml') != ''
+        with:
+          name: coordinator-rust-normalization
+          path: |
+            ${{ runner.temp }}/coordinator-rust.patch
+            native/coordinator/Cargo.lock
+      - name: Lint supervisor
+        if: hashFiles('native/coordinator/Cargo.toml') != ''
+        run: cargo clippy --locked --manifest-path native/coordinator/Cargo.toml --all-targets -- -D warnings
+      - name: Test supervisor
+        if: always() && hashFiles('native/coordinator/Cargo.toml') != ''
+        run: cargo test --locked --manifest-path native/coordinator/Cargo.toml
+      - name: Verify committed Rust sources
+        if: always() && hashFiles('native/coordinator/Cargo.toml') != ''
+        run: git diff --exit-code -- native/coordinator
+  integration:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.package_only) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      CHECK_CHANGED_CONCURRENCY: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Resolve browser version
+        id: browser
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        id: chromium
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.browser.outputs.version }}
+      - name: Install test browser
+        if: steps.chromium.outputs.cache-hit != 'true'
+        run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+      - name: Install missing browser dependencies
+        run: |
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
+          fi
+      - name: Normalize affected sources
+        id: normalize
+        env:
+          BASE_REF: ${{ inputs.base_ref || 'origin/main' }}
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { writeFileSync } from 'node:fs';
+          const changed = execFileSync('git', ['diff', '--name-only', process.env.BASE_REF], { encoding: 'utf8' }).trim().split('\n');
+          const files = changed.filter(file => /\.(?:[cm]?[jt]sx?|json|ya?ml|md)$/.test(file));
+          try {
+            if (files.length) {
+              execFileSync('vp', ['fmt', ...files], { stdio: 'inherit' });
+              execFileSync('vp', ['fmt', ...files], { stdio: 'inherit' });
+            }
+          } finally {
+            writeFileSync(`${process.env.RUNNER_TEMP}/coordinator-format.patch`, execFileSync('git', ['diff', '--binary']));
+          }
+          JS
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: coordinator-source-normalization
+          path: ${{ runner.temp }}/coordinator-format.patch
+      - name: Check affected sources
+        env:
+          BASE_REF: ${{ inputs.base_ref || 'origin/main' }}
+        run: vp run check:changed "$BASE_REF"
+      - uses: dtolnay/rust-toolchain@stable
+        id: production_rust
+        if: ${{ !cancelled() && steps.normalize.outcome == 'success' }}
+      - name: Build production server and web client
+        id: production
+        if: ${{ !cancelled() && steps.production_rust.outcome == 'success' }}
+        run: vp run --filter t3 build
+      - name: Smoke-test isolated production server and supervisor
+        if: ${{ !cancelled() && steps.production.outcome == 'success' }}
+        run: node scripts/smoke-cli-archive.ts --bundle apps/server/dist/bin.mjs --expect-version "$(node -p 'require("./apps/server/package.json").version')" --require-coordinator
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() && steps.production.outcome == 'success' }}
+        with:
+          name: coordinator-server-build
+          path: apps/server/dist/
+      - name: Verify committed source formatting
+        if: ${{ always() && steps.normalize.outcome == 'success' }}
+        run: git diff --exit-code
+  companion:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.package_only) }}
+    needs: [rust]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            extension: ""
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            extension: .exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build supervisor companion
+        run: cargo build --locked --release --manifest-path native/coordinator/Cargo.toml --target ${{ matrix.target }}
+      - name: Stage runtime files
+        shell: bash
+        run: |
+          mkdir -p artifact/coordinator
+          cp "native/coordinator/target/${{ matrix.target }}/release/t3-coordinator${{ matrix.extension }}" artifact/coordinator/
+      - uses: actions/upload-artifact@v6
+        with:
+          name: coordinator-${{ matrix.target }}
+          path: artifact/coordinator/

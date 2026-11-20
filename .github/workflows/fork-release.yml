@@ -1,0 +1,68 @@
+# Releases every commit that CI passed on main in a fork published from
+# Avalon (wunderay/t3code), under the next fork version
+# (.github/scripts/fork-release-version.cjs). The official repository has
+# its own release train and never runs this. A tag pushed with GITHUB_TOKEN
+# starts no workflow, so this dispatches release.yml, which it may.
+name: Fork release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+
+# One at a time, and the tag is made here rather than when release.yml ends,
+# so a commit pushed during a release cannot take the same version.
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch the release
+    if: github.repository != 'pingdotgg/t3code' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          sparse-checkout: |
+            /.github/scripts/
+            /apps/desktop/package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Tag and dispatch release.yml
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const { forkRelease } = require('./.github/scripts/fork-release-version.cjs');
+            const sha = process.env.SHA;
+            const branch = context.payload.repository.default_branch;
+            const { data: main } = await github.rest.repos.getBranch({ ...context.repo, branch });
+            const tags = await github.paginate(github.rest.repos.listTags, { ...context.repo, per_page: 100 });
+            const upstreamVersion = require('./apps/desktop/package.json').version;
+            const release = forkRelease({ upstreamVersion, tags, sha, mainTip: main.commit.sha });
+            if (release.skip) return core.notice(release.skip);
+            const { version } = release;
+            await github.rest.git.createRef({ ...context.repo, ref: `refs/tags/v${version}`, sha });
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo,
+                workflow_id: 'release.yml',
+                ref: branch,
+                inputs: { channel: 'stable', version, ref: sha },
+              });
+            } catch (error) {
+              // A tag without a release run would read as released on every retry.
+              await github.rest.git.deleteRef({ ...context.repo, ref: `tags/v${version}` });
+              throw error;
+            }
+            core.notice(`Started release.yml for v${version} at ${sha}.`);
