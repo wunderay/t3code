@@ -28,7 +28,8 @@ location intact. Setting `HOME` instead can put credentials where this provider 
 not find them.
 
 Check the account reported in provider settings after signing in. Existing
-threads can switch only between Claude instances with the same config directory.
+threads keep their Claude conversation only between instances with the same config
+directory; moving one to another account hands its messages over.
 Separate account directories stay isolated, including their local conversation
 state. Claude does not have Codex's shared-home and shadow-home arrangement.
 
@@ -83,6 +84,23 @@ limit was reached and the remaining wait when Claude provides a reset time.
 Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
 timestamp shows when the displayed wait started.
+
+## Balance threads across accounts
+
+Turn on **Balance Claude accounts** in **Settings → Threads → Usage limits**. A new
+thread then starts on the signed-in Claude account with the most usage left for its
+model: the one whose tighter 5-hour or weekly window has the most left, with the
+sooner reset breaking a tie. Accounts that report no limits, such as API keys, come
+after those with usage left; accounts out of usage are skipped. The readings are the
+ones **Usage → Limits** shows. Before you send, the composer names the account the
+thread will start on; pick an account in the model picker, or choose **Use**, to keep
+yours. Threads that agents start without naming a model follow the same setting; scheduled
+tasks run on the account they were saved with.
+
+When a thread hits a usage limit, its notice offers **Continue on** the account with
+the most usage left. Each account keeps its own config folder, so the thread's
+messages are handed over to it, without the agent's reasoning or tool state. The
+thread's history stays in T3 Code.
 
 ## Skills
 

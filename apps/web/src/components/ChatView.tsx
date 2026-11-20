@@ -1,7 +1,12 @@
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import {
+  accountName,
+  balanceAccount,
+  balancedMoveDetail,
+  resolveNewThreadModelSelection,
+} from "@t3tools/shared/usageLimits";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
@@ -338,7 +343,7 @@ import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
-import { modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
+import { accountBalancingBannerItem, modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
 import { hasAvailableCompactionProvider } from "./chat/compaction.logic";
@@ -2591,6 +2596,16 @@ export default function ChatView(props: ChatViewProps) {
     });
     return item ? [item] : [];
   });
+  const limitMove =
+    limitRecoveryRun !== null && activeThreadShell !== null && serverConfig
+      ? balanceAccount({
+          selection: activeThreadShell.modelSelection,
+          providers: providerStatuses,
+          now: Date.parse(`${nowMinute}:00Z`),
+          settings: serverConfig.settings,
+          projectId: activeThreadShell.projectId,
+        })
+      : null;
   const limitRecoveryBanner =
     limitRecoveryRun !== null && activeThreadShell !== null
       ? usageLimitRecoveryBannerItem({
@@ -2610,6 +2625,15 @@ export default function ChatView(props: ChatViewProps) {
             });
             if (result._tag === "Failure") throw squashAtomCommandFailure(result);
           },
+          ...(limitMove && canResume
+            ? {
+                moveTo: {
+                  label: `Continue on ${accountName(limitMove.to)}`,
+                  detail: balancedMoveDetail(limitMove),
+                  onMove: () => void onResume(limitMove.selection),
+                },
+              }
+            : {}),
         })
       : null;
   const composerBannerItems = (() => {
@@ -2658,6 +2682,30 @@ export default function ChatView(props: ChatViewProps) {
             }),
           ]
         : [];
+    // The server picks the account at send (`balanceAccount`); this says where it will start.
+    const balanced =
+      !isServerThread &&
+      multipleModelSelections === null &&
+      !composerModelSelectionExplicit &&
+      pendingHandoffSelection &&
+      serverConfig
+        ? balanceAccount({
+            selection: pendingHandoffSelection,
+            providers: providerStatuses,
+            now: Date.parse(`${nowMinute}:00Z`),
+            settings: serverConfig.settings,
+            projectId: draftThread?.projectId ?? null,
+          })
+        : null;
+    if (balanced) {
+      fallbackItems.push(
+        accountBalancingBannerItem({
+          balanced,
+          onUseSelected: () =>
+            onProviderModelSelectStable(balanced.from.instanceId, balanced.selection.model),
+        }),
+      );
+    }
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
     const extensionStatusBanner = extensionStatusBannerItem(
       deriveProviderExtensionStatuses(serverProjection),

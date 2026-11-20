@@ -2213,6 +2213,9 @@ export const layerWsRpc = (
                             ? {}
                             : { generateTitle: input.generateTitle }),
                           modelSelection: input.modelSelection,
+                          ...(input.balanceAccount === undefined
+                            ? {}
+                            : { balanceAccount: input.balanceAccount }),
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
                           workspaceStrategy: input.workspaceStrategy,

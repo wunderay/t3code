@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
+import { CLAUDE_SCOPED_WINDOW_PREFIX, claudeScopeToken } from "@t3tools/shared/usageLimits";
 import {
   clampPercent,
   makeUnavailableUsageLimits,
@@ -47,20 +48,8 @@ export const makeClaudeScopedLimitNames = Ref.make<ClaudeScopedLimitNames>({
   overageIncluded: undefined,
 });
 
-const SCOPED_WINDOW_PREFIX = "seven_day_";
-const scopeToken = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-
 function scopedWindowId(displayName: string): string {
-  return `${SCOPED_WINDOW_PREFIX}${scopeToken(displayName)}`;
-}
-
-/** A model-scoped weekly allowance blocks only its own model; an unknown model is not blocked. */
-export function windowLimitsModel(
-  window: Pick<ServerProviderUsageWindow, "id">,
-  model: string | null,
-): boolean {
-  if (!window.id.startsWith(SCOPED_WINDOW_PREFIX)) return true;
-  return model !== null && scopeToken(model).includes(window.id.slice(SCOPED_WINDOW_PREFIX.length));
+  return `${CLAUDE_SCOPED_WINDOW_PREFIX}${claudeScopeToken(displayName)}`;
 }
 
 function scopedWindow(

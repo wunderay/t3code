@@ -1166,6 +1166,7 @@ export function createThreadOutboxDelivery(): {
         ),
         uploadedAttachments: prepared.attachments,
         modelSelection: sendSettings.modelSelection,
+        ...(creation.balanceAccount ? { balanceAccount: true } : {}),
         runtimeMode: sendSettings.runtimeMode,
         interactionMode: sendSettings.interactionMode,
         workspaceMode: workspace.workspaceMode,

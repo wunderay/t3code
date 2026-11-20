@@ -28,6 +28,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly context?: OrchestrationMessageContext;
   readonly uploadedAttachments: ReadonlyArray<UploadedMobileAttachment | ChatAttachment>;
   readonly modelSelection: ModelSelection;
+  readonly balanceAccount?: boolean;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceMode: "local" | "worktree";
@@ -55,6 +56,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
       attachments: spec.uploadedAttachments,
     },
     modelSelection: spec.modelSelection,
+    ...(spec.balanceAccount ? { balanceAccount: true } : {}),
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,

@@ -474,6 +474,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset wake recover continue"],
   },
   {
+    id: "balance-claude-accounts",
+    title: "Balance Claude accounts",
+    to: "/settings/threads",
+    searchTerms: ["usage quota rate limit account load balance spread headroom"],
+  },
+  {
+    id: "balance-codex-accounts",
+    title: "Balance Codex accounts",
+    to: "/settings/threads",
+    searchTerms: ["usage quota rate limit account load balance spread headroom"],
+  },
+  {
     id: "auto-resume-limited-threads",
     title: "Resume after usage limits",
     to: "/settings/threads",

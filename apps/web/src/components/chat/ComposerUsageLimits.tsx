@@ -1,6 +1,11 @@
 import type { EnvironmentId, UsageLimitsReport } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
-import { limitsNotice } from "@t3tools/shared/usageLimits";
+import {
+  accountName,
+  balancedAccountReason,
+  limitsNotice,
+  type BalancedAccount,
+} from "@t3tools/shared/usageLimits";
 import { GaugeIcon } from "lucide-react";
 
 import { ensureLocalApi } from "../../localApi";
@@ -99,6 +104,27 @@ export function modelFallbackBannerItem({
     ),
     dismissLabel: "Dismiss fallback model notice",
     onDismiss,
+  };
+}
+
+export function accountBalancingBannerItem({
+  balanced,
+  onUseSelected,
+}: {
+  readonly balanced: BalancedAccount;
+  readonly onUseSelected: () => void;
+}): ComposerBannerStackItem {
+  return {
+    id: "balanced-account",
+    variant: "info",
+    icon: <GaugeIcon />,
+    title: `Starts on ${accountName(balanced.to)}`,
+    description: balancedAccountReason(balanced),
+    actions: (
+      <Button size="xs" variant="ghost" onClick={onUseSelected}>
+        Use {accountName(balanced.from)}
+      </Button>
+    ),
   };
 }
 

@@ -207,7 +207,7 @@ import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-scroll-position";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
-import type { OrchestrationV2ProviderSession } from "@t3tools/contracts";
+import type { ModelSelection, OrchestrationV2ProviderSession } from "@t3tools/contracts";
 
 export interface ThreadDetailScreenProps {
   readonly header?: React.ReactNode;
@@ -289,7 +289,8 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   /** Present while the thread's queue is held. */
-  readonly onResumeQueue: (() => Promise<void>) | null;
+  /** `modelSelection` continues on that account instead of the composer's. */
+  readonly onResumeQueue: ((modelSelection?: ModelSelection) => Promise<void>) | null;
   readonly offersSideChat: boolean;
   readonly onSendMessage: (
     followUp?: ActiveTurnComposerAction,
@@ -1608,6 +1609,7 @@ function ThreadDetailBody(
                       key={props.selectedThread.latestRun?.runId}
                       thread={props.selectedThread}
                       environmentId={props.environmentId}
+                      onContinueOn={props.onResumeQueue}
                     />
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}

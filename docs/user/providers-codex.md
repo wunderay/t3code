@@ -102,6 +102,23 @@ Use a completely separate **CODEX_HOME path**, with no shadow home, when you wan
 separate Codex sessions and configuration. That instance cannot continue threads
 from the other home.
 
+## Balance threads across accounts
+
+Turn on **Balance Codex accounts** in **Settings → Threads → Usage limits**. A new
+thread then starts on the signed-in Codex account with the most usage left for its
+model: the one whose tighter 5-hour or weekly window has the most left, with the
+sooner reset breaking a tie. Accounts that report no limits come after those with
+usage left; accounts out of usage are skipped. The readings are the ones
+**Usage → Limits** shows. Before you send, the composer names the account the thread
+will start on; pick an account in the model picker, or choose **Use**, to keep yours.
+Threads that agents start without naming a model follow the same setting; scheduled
+tasks run on the account they were saved with.
+
+When a thread hits a usage limit, its notice offers **Continue on** the account with
+the most usage left. An account that shares the thread's Codex home continues the
+same conversation. One with its own home receives the thread's messages, without
+the agent's reasoning or tool state.
+
 ## Switch accounts in an existing thread
 
 Choose the other account from the thread's model picker. T3 Code offers compatible

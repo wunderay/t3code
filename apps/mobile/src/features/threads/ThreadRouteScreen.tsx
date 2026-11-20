@@ -31,6 +31,7 @@ import {
   isProviderNativeSubagentThread,
   MessageId,
   ThreadId,
+  type ModelSelection,
   type ProjectScript,
 } from "@t3tools/contracts";
 import {
@@ -692,7 +693,7 @@ function ThreadRouteContent(
     });
   };
 
-  const handleResumeQueue = async () => {
+  const handleResumeQueue = async (modelSelection?: ModelSelection) => {
     if (!selectedThread) return;
     const result = await resumeThread({
       thread: selectedThread,
@@ -700,7 +701,7 @@ function ThreadRouteContent(
       queueHeld: composer.queueHeld,
       runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
       interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
-      modelSelection: composer.modelSelection,
+      modelSelection: modelSelection ?? composer.modelSelection,
       messageId: MessageId.make(uuidv4()),
       createdAt: new Date().toISOString(),
       setRuntimeMode: setThreadRuntimeMode,

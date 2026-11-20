@@ -301,6 +301,13 @@ jobs:
         shell: bash
         run: cargo ${{ inputs.platform == 'win' && 'xwin build' || 'build' }} --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "${{ inputs.rust_target }}"
 
+      # cargo-xwin archives the C that libsqlite3-sys compiles with llvm-lib,
+      # which the GitHub-hosted Ubuntu image does not put on PATH.
+      - name: Install llvm-lib
+        if: inputs.platform == 'win' && steps.coordinator_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: command -v llvm-lib || { sudo apt-get update && sudo apt-get install -y llvm; }
+
       - name: Build Coordinator supervisor
         if: steps.coordinator_cache.outputs.cache-hit != 'true'
         shell: bash

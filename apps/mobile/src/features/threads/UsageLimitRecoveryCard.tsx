@@ -2,30 +2,39 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import { AsyncResult } from "effect/reactivity";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { limitRecoveryOwnsSnooze } from "@t3tools/client-runtime/state/thread-execution";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
 import {
   CHATGPT_USAGE_LIMIT_CODE,
   CHATGPT_USAGE_URL,
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+  accountName,
+  balanceAccount,
+  balancedMoveDetail,
 } from "@t3tools/shared/usageLimits";
 import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
 import { Linking, Pressable, View } from "react-native";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText as Text } from "../../components/ui/AppText";
-import { useDeadlinePassed } from "../../lib/clock";
+import { useDeadlinePassed, useNowMinuteMs } from "../../lib/clock";
+import { useEnvironmentServerConfig } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 export function UsageLimitRecoveryCard({
   thread,
   environmentId,
+  onContinueOn,
 }: {
   thread: EnvironmentThreadShell;
   environmentId: EnvironmentId;
+  /** Resumes the limited run on another account; null while the thread cannot resume. */
+  onContinueOn?: ((selection: ModelSelection) => void) | null;
 }) {
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
+  const serverConfig = useEnvironmentServerConfig(environmentId);
+  const now = useNowMinuteMs();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resetAt = thread.runtime?.usageLimitResetAt ?? null;
@@ -59,6 +68,16 @@ export function UsageLimitRecoveryCard({
     !runId
   )
     return null;
+  const move =
+    onContinueOn && serverConfig?.settings
+      ? balanceAccount({
+          selection: thread.modelSelection,
+          providers: serverConfig.providers,
+          now,
+          settings: serverConfig.settings,
+          projectId: thread.projectId,
+        })
+      : null;
   const resetText = displayAt
     ? `${canSchedule && scheduled ? "Resumes" : "Resets"} ${new Date(displayAt).toLocaleString(
         undefined,
@@ -154,10 +173,18 @@ export function UsageLimitRecoveryCard({
               : resetText
                 ? `Usage limit reached. ${resetText}`
                 : "Usage limit reached. The provider did not report a reset time. Retry manually when your limit is available."}
+          {move ? ` ${balancedMoveDetail(move)}` : null}
         </Text>
-        {chatGptLimit || canSchedule ? (
+        {chatGptLimit || canSchedule || move ? (
           // The margins cancel the 44pt touch height so the links sit 8pt under the text.
           <View className="-mb-3 -mt-2 flex-row flex-wrap gap-x-4">
+            {move && onContinueOn ? (
+              <RecoveryAction
+                label={`Continue on ${accountName(move.to)}`}
+                disabled={false}
+                onPress={() => onContinueOn(move.selection)}
+              />
+            ) : null}
             {chatGptLimit ? (
               <RecoveryAction
                 label={action.label}

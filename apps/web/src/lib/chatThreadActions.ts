@@ -68,6 +68,14 @@ export function hasExplicitComposerModelSelection(
   );
 }
 
+/** A new thread whose account the user did not pick lets the server balance it. */
+export function balancesNewThreadAccount(
+  draft: ComposerModelSelectionState | null | undefined,
+  isLocalDraftThread: boolean,
+): boolean {
+  return isLocalDraftThread && !hasExplicitComposerModelSelection(draft);
+}
+
 export function threadHasStarted(
   thread: Pick<EnvironmentThreadShell, "latestRun" | "itemCount" | "runtime"> | null | undefined,
 ): boolean {

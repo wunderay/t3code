@@ -434,6 +434,20 @@ function AboutVersionSection() {
   );
 }
 
+const ACCOUNT_BALANCING_ROWS = [
+  {
+    key: "balanceClaudeAccounts",
+    provider: "Claude",
+    title: "Balance Claude accounts",
+    searchId: "balance-claude-accounts",
+  },
+  {
+    key: "balanceCodexAccounts",
+    provider: "Codex",
+    title: "Balance Codex accounts",
+    searchId: "balance-codex-accounts",
+  },
+] as const;
 export function useSettingsRestore(onRestored?: () => void) {
   const {
     theme,
@@ -513,6 +527,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
       ? ["Snooze until limits reset"]
       : []),
+    ...ACCOUNT_BALANCING_ROWS.filter(
+      (row) => settings[row.key] !== DEFAULT_UNIFIED_SETTINGS[row.key],
+    ).map((row) => row.title),
     ...(!Equal.equals(settings.snoozePresets, DEFAULT_UNIFIED_SETTINGS.snoozePresets)
       ? ["Snooze options"]
       : []),
@@ -686,6 +703,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
+      balanceClaudeAccounts: DEFAULT_UNIFIED_SETTINGS.balanceClaudeAccounts,
+      balanceCodexAccounts: DEFAULT_UNIFIED_SETTINGS.balanceCodexAccounts,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
@@ -1909,6 +1928,23 @@ export function ThreadsSettingsPanel() {
             />
           }
         />
+        {ACCOUNT_BALANCING_ROWS.map((row) => (
+          <SettingsRow
+            key={row.key}
+            serverScoped
+            {...searchableSetting(row.searchId)}
+            description={`New threads start on the signed-in ${row.provider} account with the most usage left, unless you pick an account in the composer.`}
+            settingKeys={[row.key]}
+            control={
+              <ScopedSwitch
+                settingKeys={[row.key]}
+                checked={settings[row.key]}
+                onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
+                aria-label={row.title}
+              />
+            }
+          />
+        ))}
       </SettingsSection>
 
       {hasServerTargets ? (

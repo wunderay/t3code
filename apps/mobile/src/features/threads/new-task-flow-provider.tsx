@@ -733,12 +733,12 @@ export function NewTaskFlowProvider(
     }
     const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
     const text = draft.text.trim();
-    const draftModelSelection =
-      resolveSelectableModelSelection(
-        selectedEnvironmentServerConfig,
-        draft.modelSelection ?? null,
-        selectedProject.id,
-      ) ?? selectedModel;
+    const pickedModelSelection = resolveSelectableModelSelection(
+      selectedEnvironmentServerConfig,
+      draft.modelSelection ?? null,
+      selectedProject.id,
+    );
+    const draftModelSelection = pickedModelSelection ?? selectedModel;
     if ((text.length === 0 && draft.attachments.length === 0) || !draftModelSelection) {
       return null;
     }
@@ -787,6 +787,7 @@ export function NewTaskFlowProvider(
         ...((workspaceSelection?.startFromOrigin ?? startFromOrigin)
           ? { startFromOrigin: true }
           : {}),
+        ...(pickedModelSelection === null ? { balanceAccount: true } : {}),
       },
       createdAt: metadata.createdAt,
     };

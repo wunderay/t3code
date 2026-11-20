@@ -467,6 +467,150 @@ it.effect(
   },
 );
 
+const workAccount = ProviderInstanceId.make("codex_work");
+
+const codexAccount = (instanceId: ProviderInstanceId, usedPercent: number): ServerProvider => ({
+  instanceId,
+  driver: adapter.driver,
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-06-20T00:00:00.000Z",
+  models: [{ slug: modelSelection.model, name: "Codex", isCustom: false, capabilities: null }],
+  slashCommands: [],
+  skills: [],
+  usageLimits: {
+    checkedAt: "2026-06-20T00:00:00.000Z",
+    windows: [{ id: "primary", kind: "session", label: "Session", usedPercent }],
+  },
+});
+
+/** Balancing on; by default the default Codex account is 90% used and the work one 20%. */
+function balancingHarness(
+  providers: Array<ServerProvider> = [
+    codexAccount(modelSelection.instanceId, 90),
+    codexAccount(workAccount, 20),
+  ],
+) {
+  return makeHarness({
+    adapters: [adapter, { ...adapter, instanceId: workAccount }],
+    providers,
+    serverSettings: {
+      balanceCodexAccounts: true,
+      providerInstances: {
+        [modelSelection.instanceId]: { driver: adapter.driver, enabled: true, config: {} },
+        [workAccount]: { driver: adapter.driver, enabled: true, config: {} },
+      },
+    },
+  });
+}
+
+it.effect(
+  "starts a launch that leaves the account to balancing on the one with most usage left",
+  () =>
+    Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const picked = yield* launches.launch(
+        launchInput({ command: "command:picked", thread: "thread:picked" }),
+      );
+      const balanced = yield* launches.launch({
+        ...launchInput({ command: "command:balanced", thread: "thread:balanced" }),
+        balanceAccount: true,
+      });
+      assert.deepStrictEqual(
+        [picked, balanced].map((launch) => launch.projection.thread.modelSelection.instanceId),
+        [modelSelection.instanceId, workAccount],
+      );
+    }).pipe(Effect.provide(balancingHarness().layer)),
+);
+
+it.effect("keeps the account a launch's accepted first attempt started on when it retries", () =>
+  Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const input = launchInput({ command: "command:retried", thread: "thread:retried" });
+    yield* launches.launch(input);
+    const retried = yield* launches.launch({ ...input, balanceAccount: true });
+    assert.equal(retried.projection.thread.modelSelection.instanceId, modelSelection.instanceId);
+  }).pipe(Effect.provide(balancingHarness().layer)),
+);
+
+it.effect(
+  "replays an accepted balanced launch on its account after the usage order changes",
+  () => {
+    // The registry reads this array, so changing it changes what balancing sees.
+    const providers = [codexAccount(modelSelection.instanceId, 90), codexAccount(workAccount, 20)];
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({ command: "command:replayed", thread: "thread:replayed" }),
+        balanceAccount: true,
+      };
+      yield* launches.launch(input);
+      providers.splice(
+        0,
+        providers.length,
+        codexAccount(modelSelection.instanceId, 10),
+        codexAccount(workAccount, 95),
+      );
+      yield* launches.launch({
+        ...input,
+        ...launchInput({ command: "command:replayed", thread: "thread:replayed", message: "Go" }),
+        balanceAccount: true,
+      });
+      const projection = yield* threads.getThreadProjection(ThreadId.make("thread:replayed"));
+      assert.deepStrictEqual(
+        [
+          projection.thread.modelSelection.instanceId,
+          projection.runs[0]?.modelSelection.instanceId,
+        ],
+        [workAccount, workAccount],
+      );
+    }).pipe(Effect.provide(balancingHarness(providers).layer));
+  },
+);
+
+it.effect("runs a scheduled task on the account it was saved with, even with balancing on", () => {
+  const harness = balancingHarness();
+  const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        harness.layer,
+        NodeCrypto.layer,
+        Scheduler.layer,
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        ManagedPolicy.layerTest(),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const tasks = yield* ScheduledTasks.ScheduledTaskService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const { task } = yield* tasks.upsert({
+      id: ScheduledTaskId.make("scheduled-task:saved-account"),
+      title: "Nightly check",
+      prompt: "Check the build.",
+      enabled: false,
+      schedule: { type: "interval", everyMs: 3_600_000 },
+      projectId,
+      threadId: null,
+      workspaceStrategy: { type: "root" },
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const result = yield* tasks.runNow({ id: task.id });
+    assert.equal(result.task.lastRunStatus, "succeeded");
+    assert.ok(result.threadId);
+    const projection = yield* threads.getThreadProjection(result.threadId);
+    assert.equal(projection.thread.modelSelection.instanceId, modelSelection.instanceId);
+  }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+});
+
 it.effect("leaves a task delegated from a linked environment out of the top-level list", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {

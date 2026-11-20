@@ -2,6 +2,7 @@ import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { balanceAccount, balancedAccountReason } from "@t3tools/shared/usageLimits";
 import {
   CommandId,
   type ChatAttachment,
@@ -94,6 +95,8 @@ export interface ThreadLaunchInput {
   readonly title: string;
   readonly generateTitle?: boolean;
   readonly modelSelection: ModelSelection;
+  /** The selection is a default, not the user's pick: start on the account balancing chooses. */
+  readonly balanceAccount?: boolean;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
@@ -342,6 +345,26 @@ const make = Effect.gen(function* () {
     receipts
       .getByCommandId(commandId)
       .pipe(Effect.mapError(mapError(input, "read-receipt", input.threadId)));
+
+  const balancedSelection = Effect.fn("ThreadLaunchService.balancedSelection")(function* (
+    input: ThreadLaunchInput,
+  ) {
+    const settings = yield* serverSettings.getSettings.pipe(Effect.option);
+    if (Option.isNone(settings)) return input.modelSelection;
+    const balanced = balanceAccount({
+      selection: input.modelSelection,
+      providers: yield* providerRegistry.getProviders,
+      now: DateTime.toEpochMillis(yield* DateTime.now),
+      settings: settings.value,
+      projectId: input.projectId,
+    });
+    if (balanced === null) return input.modelSelection;
+    yield* Effect.logInfo("orchestration-v2.thread-launch.account-balanced", {
+      commandId: input.commandId,
+      reason: balancedAccountReason(balanced),
+    });
+    return balanced.selection;
+  });
 
   const validateReusableThread = Effect.fn("ThreadLaunchService.validateReusableThread")(function* (
     input: ThreadLaunchInput,
@@ -1206,7 +1229,7 @@ const make = Effect.gen(function* () {
     function* (request) {
       // Scratch has no Git repository. Normalize before folder allocation so
       // durable preparation and retries use the thread's own Scratch folder.
-      const input: ThreadLaunchInput =
+      let input: ThreadLaunchInput =
         request.workspaceStrategy.type === "worktree" &&
         (yield* managedFolders.isScratchProject(request.projectId))
           ? { ...request, workspaceStrategy: { type: "root" } }
@@ -1232,6 +1255,23 @@ const make = Effect.gen(function* () {
       }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
+      if (input.balanceAccount === true) {
+        // A replay keeps the account its accepted attempt started on; only a fresh launch ranks.
+        const acceptedThreadId =
+          Option.isSome(launchReceipt) && launchReceipt.value.status === "accepted"
+            ? (input.threadId ?? launchReceipt.value.threadId)
+            : undefined;
+        const accepted =
+          acceptedThreadId === undefined
+            ? null
+            : yield* threads
+                .getThreadShell(acceptedThreadId)
+                .pipe(Effect.mapError(mapError(input, "read-receipt", acceptedThreadId)));
+        input = {
+          ...input,
+          modelSelection: accepted?.modelSelection ?? (yield* balancedSelection(input)),
+        };
+      }
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,

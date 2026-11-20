@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeDns from "node:dns";
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
+import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodeSea from "node:sea";
@@ -314,6 +315,9 @@ class NotIsolated extends Schema.TaggedError<NotIsolated>()("NotIsolated", {
   reason: Schema.String,
 }) {}
 
+// A single-executable resolves file-backed packages only through createRequire, not import().
+const requireSandboxRuntime = NodeModule.createRequire(import.meta.url);
+
 const attempt = <A>(detail: string, run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: () => new ThreadIsolationError({ detail }) });
 /** As `attempt`, with what went wrong after the detail. */
@@ -362,7 +366,10 @@ export const SandboxRuntimeSource = Context.Reference<
   defaultValue: () =>
     attempt(
       "the sandbox runtime could not be loaded",
-      () => import("@anthropic-ai/sandbox-runtime"),
+      async () =>
+        requireSandboxRuntime(
+          "@anthropic-ai/sandbox-runtime",
+        ) as typeof import("@anthropic-ai/sandbox-runtime"),
     ).pipe(
       Effect.map((module) => {
         const program = unpackedPath(module.VENDORED_SRT_WIN_EXE);
@@ -370,7 +377,10 @@ export const SandboxRuntimeSource = Context.Reference<
         return {
           manager: module.SandboxManager,
           packageRoot: NodeURL.fileURLToPath(
-            new URL("..", import.meta.resolve("@anthropic-ai/sandbox-runtime")),
+            new URL(
+              "..",
+              NodeURL.pathToFileURL(requireSandboxRuntime.resolve("@anthropic-ai/sandbox-runtime")),
+            ),
           ),
           windows: {
             program,
@@ -1058,7 +1068,10 @@ interface ParentProxy {
 }
 const loadParentProxy = attempt(
   "the sandbox runtime's proxy support could not be loaded",
-  () => import("@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js"),
+  async () =>
+    requireSandboxRuntime(
+      "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js",
+    ) as typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js"),
 ).pipe(
   Effect.map((module): ParentProxy | undefined => {
     const resolved = module.resolveParentProxy();

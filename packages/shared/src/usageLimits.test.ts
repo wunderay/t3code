@@ -2,8 +2,10 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProviderDriverKind,
+  ProjectId,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderUsageWindow,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -25,6 +27,9 @@ import {
   paceRemainingPercent,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  balanceAccount,
+  balancedAccountReason,
+  balancedMoveDetail,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -54,6 +59,200 @@ function provider(overrides: Partial<ServerProvider>): ServerProvider {
     ...overrides,
   };
 }
+
+describe("account balancing", () => {
+  const model = "gpt-6.1-sol";
+  const driver = ProviderDriverKind.make("codex");
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    balanceCodexAccounts: true,
+    providerInstances: {
+      [ProviderInstanceId.make("a")]: { driver, enabled: true, config: {} },
+      [ProviderInstanceId.make("b")]: { driver, enabled: true, config: {} },
+    },
+  };
+  const account = (id: string, ...windows: ReadonlyArray<Partial<ServerProviderUsageWindow>>) =>
+    provider({
+      instanceId: ProviderInstanceId.make(id),
+      models: [{ slug: model, name: model, isCustom: false, capabilities: null }],
+      ...(windows.length > 0
+        ? {
+            usageLimits: {
+              checkedAt: "2026-09-03T11:00:00.000Z",
+              windows: windows.map((overrides) => ({ ...window, ...overrides })),
+            },
+          }
+        : {}),
+    });
+  const weekly = {
+    id: "secondary",
+    kind: "weekly",
+    label: "Weekly",
+    windowDurationMins: 10_080,
+  } as const;
+  const chosen = (providers: ReadonlyArray<ServerProvider>, overrides = {}) =>
+    balanceAccount({
+      selection: { instanceId: ProviderInstanceId.make("a"), model },
+      providers,
+      now,
+      settings,
+      ...overrides,
+    })?.to.instanceId ?? null;
+
+  it.each([
+    [
+      "most usage left",
+      [account("a", { usedPercent: 80 }), account("b", { usedPercent: 30 })],
+      "b",
+    ],
+    [
+      "the binding window is the most used one",
+      [
+        account("a", { usedPercent: 50 }),
+        account("b", { usedPercent: 10 }, { ...weekly, usedPercent: 90 }),
+      ],
+      null,
+    ],
+    ["a tie keeps the selected account", [account("a", {}), account("b", {})], null],
+    ["a tie keeps the selected account listed second", [account("b", {}), account("a", {})], null],
+    [
+      "a tie goes to the sooner reset",
+      [
+        account("a", { resetsAt: "2026-09-03T15:00:00.000Z" }),
+        account("b", { resetsAt: "2026-09-03T13:00:00.000Z" }),
+      ],
+      "b",
+    ],
+    [
+      "an unread account ranks after known headroom",
+      [account("a", { usedPercent: 90 }), account("b")],
+      null,
+    ],
+    [
+      "an unread account beats an exhausted one",
+      [account("a", { usedPercent: 100 }), account("b")],
+      "b",
+    ],
+    [
+      "a window past its reset has refilled",
+      [
+        account("a", { usedPercent: 40 }),
+        account("b", { usedPercent: 95, resetsAt: "2026-09-03T11:00:00.000Z" }),
+      ],
+      "b",
+    ],
+    [
+      "another model's weekly allowance does not bind",
+      [
+        account("a", { usedPercent: 40 }),
+        account("b", { usedPercent: 10 }, { ...weekly, id: "seven_day_fable", usedPercent: 99 }),
+      ],
+      "b",
+    ],
+  ] as const)("picks by %s", (_name, providers, expected) => {
+    expect(chosen(providers)).toBe(expected);
+  });
+
+  it.each([
+    ["the setting is off", {}, { settings: { ...settings, balanceCodexAccounts: false } }],
+    ["the account is disabled", { enabled: false }, {}],
+    ["the account is signed out", { auth: { status: "unauthenticated" } }, {}],
+    ["the account lacks the model", { models: [] }, {}],
+    ["the account is another provider", { driver: ProviderDriverKind.make("claudeAgent") }, {}],
+    [
+      "the project disables the account",
+      {},
+      {
+        projectId: ProjectId.make("project"),
+        settings: {
+          ...settings,
+          projectSettingsOverrides: {
+            [ProjectId.make("project")]: {
+              providerInstances: { [ProviderInstanceId.make("b")]: { enabled: false } },
+            },
+          },
+        },
+      },
+    ],
+  ] as const)("keeps the selection when %s", (_name, other, overrides) => {
+    const providers = [
+      account("a", { usedPercent: 90 }),
+      { ...account("b", { usedPercent: 0 }), ...other },
+    ];
+    expect(chosen(providers, overrides)).toBeNull();
+  });
+
+  it.each([
+    ["claude-sonnet-5", "b"],
+    ["claude-opus-5", null],
+  ])(
+    "lets an exhausted Opus-only window exclude an account only for Opus: %s",
+    (scoped, expected) => {
+      const models = ["claude-sonnet-5", "claude-opus-5"].map((slug) => ({
+        slug,
+        name: slug,
+        isCustom: false,
+        capabilities: null,
+      }));
+      const opusWeek = {
+        ...weekly,
+        id: "seven_day_opus",
+        label: "Weekly · Opus",
+        usedPercent: 100,
+      };
+      expect(
+        balanceAccount({
+          selection: { instanceId: ProviderInstanceId.make("a"), model: scoped },
+          providers: [
+            { ...account("a", { usedPercent: 50 }), models },
+            { ...account("b", { usedPercent: 10 }, opusWeek), models },
+          ],
+          now,
+          settings,
+        })?.to.instanceId ?? null,
+      ).toBe(expected);
+    },
+  );
+
+  it("says why it chose the account", () => {
+    const balanced = balanceAccount({
+      selection: { instanceId: ProviderInstanceId.make("a"), model },
+      providers: [
+        { ...account("a", { usedPercent: 88 }), displayName: "Personal" },
+        { ...account("b", { ...weekly, usedPercent: 36 }), displayName: "Work" },
+      ],
+      now,
+      settings,
+    });
+    expect(balanced && balancedAccountReason(balanced)).toBe(
+      "Work has 64% left (Weekly); Personal has 12% left (Session).",
+    );
+  });
+
+  it.each([
+    ["shared", "shared", "Work has 70% left (Session) and continues this conversation."],
+    [
+      "own",
+      "shared",
+      "Work has 70% left (Session). It keeps a separate history, so the thread's messages are handed over; the agent's reasoning and tool state are not.",
+    ],
+  ])("says whether a %s home continues the conversation", (toGroup, fromGroup, expected) => {
+    const balanced = balanceAccount({
+      selection: { instanceId: ProviderInstanceId.make("a"), model },
+      providers: [
+        { ...account("a", { usedPercent: 100 }), continuation: { groupKey: fromGroup } },
+        {
+          ...account("b", { usedPercent: 30 }),
+          displayName: "Work",
+          continuation: { groupKey: toGroup },
+        },
+      ],
+      now,
+      settings,
+    });
+    expect(balanced && balancedMoveDetail(balanced)).toBe(expected);
+  });
+});
 
 describe("new thread model fallback", () => {
   const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };

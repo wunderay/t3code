@@ -347,6 +347,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           projectId,
           title: input.title,
           modelSelection,
+          // An inherited or default model leaves the account to balancing; a named one does not.
+          balanceAccount: input.modelSelection === undefined && !replaying,
           runtimeMode: startedRuntimeMode,
           interactionMode,
           workspaceStrategy: strategy ?? { type: "root" },

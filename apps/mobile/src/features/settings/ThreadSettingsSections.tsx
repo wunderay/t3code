@@ -101,6 +101,8 @@ export function AutoSettleSettingsRows(props: {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      balanceClaudeAccounts?: boolean;
+      balanceCodexAccounts?: boolean;
     },
   ) => props.write(patch);
 
@@ -143,6 +145,22 @@ export function AutoSettleSettingsRows(props: {
             disabled={disabledFor("snoozeLimitedThreads")}
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
           />
+          {(
+            [
+              ["balanceClaudeAccounts", "Claude"],
+              ["balanceCodexAccounts", "Codex"],
+            ] as const
+          ).map(([key, provider]) => (
+            <SettingsSwitchRow
+              key={key}
+              icon="person.crop.circle"
+              label={`Balance ${provider} accounts`}
+              subtitle={`New threads start on the signed-in ${provider} account with the most usage left, unless you pick an account.`}
+              value={uniformMobileSetting(displayTargets, key)}
+              disabled={disabledFor(key)}
+              onValueChange={(value) => writeToAll({ [key]: value })}
+            />
+          ))}
         </SettingsSection>
       ) : null}
       <SettingsSection title="Auto-settle">

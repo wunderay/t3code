@@ -70,3 +70,28 @@ describe("project thread title", () => {
     expect(relaunched.message.attachments).toEqual(uploadedAttachments);
   });
 });
+
+describe("project thread account balancing", () => {
+  it.each([true, undefined])("asks the server to balance the account: %s", (balanceAccount) => {
+    const input = buildProjectThreadStartTurnInput({
+      projectId: ProjectId.make("project"),
+      projectCwd: "/workspace",
+      threadId: "thread",
+      commandId: "command",
+      messageId: "message",
+      createdAt: "2026-09-04T00:00:00Z",
+      text: "Fix it",
+      uploadedAttachments: [],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      ...(balanceAccount ? { balanceAccount } : {}),
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceMode: "local",
+      branch: null,
+      worktreePath: null,
+      startFromOrigin: false,
+      worktreeBranchName: "unused",
+    });
+    expect(input.balanceAccount).toBe(balanceAccount);
+  });
+});

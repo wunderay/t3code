@@ -2628,6 +2628,30 @@ it.effect("leaves a worktree thread its own git folder when its main checkout is
   ),
 );
 
+it.effect("mounts a worktree thread's git folders once when its main checkout is writable", () =>
+  live(
+    Effect.gen(function* () {
+      const { wrap, settings, home, path, bin } = yield* isolation({
+        enabled: true,
+        srtRuns: { ok: false },
+        tools: ["docker", "socat"],
+        git: "worktree",
+      });
+      const main = path.join(home, "main");
+      yield* settings.updateSettings({ threadIsolationPolicy: { writableFolders: [main] } });
+      const launch = yield* wrap({ env: { PATH: bin } });
+      assert.strictEqual(launch?.backend, "docker");
+      // Docker refuses a container whose folder is mounted twice.
+      const targets = launch!.args.flatMap((arg) => /(?:^|,)dst=([^,]+)/.exec(arg)?.[1] ?? []);
+      assert.include(targets, path.join(main, ".git"));
+      assert.deepStrictEqual(
+        targets.filter((target, index) => targets.indexOf(target) !== index),
+        [],
+      );
+    }),
+  ),
+);
+
 it.effect("gives srt threads the owner's folders and variables, and a thread its own choice", () =>
   live(
     Effect.gen(function* () {

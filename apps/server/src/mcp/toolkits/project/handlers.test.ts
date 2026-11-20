@@ -205,6 +205,7 @@ it.effect(
           readonly runtimeMode?: RuntimeMode;
           readonly targeted?: false;
           readonly overrideModel?: ModelSelection;
+          readonly modelSelection?: ModelSelection;
           readonly hostedAppUrl?: string;
           readonly refusedByCeiling?: true;
         },
@@ -243,6 +244,13 @@ it.effect(
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
+      // A default model leaves the account to balancing; a named one keeps it.
+      expect(belowCeiling.launched[0]?.balanceAccount).toBe(true);
+      const named = yield* launchWith("full-access", "full-access", {
+        title: "Fix",
+        modelSelection: belowCeiling.modelSelection,
+      });
+      expect(named.launched[0]?.balanceAccount).toBe(false);
 
       const aboveCeiling = yield* launchWith("auto-accept-edits", "full-access", {
         title: "Fix",

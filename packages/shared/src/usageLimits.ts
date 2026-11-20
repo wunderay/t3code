@@ -26,6 +26,21 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
+export const CLAUDE_SCOPED_WINDOW_PREFIX = "seven_day_";
+export const claudeScopeToken = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+
+/** A model-scoped weekly allowance blocks only its own model; an unknown model is not blocked. */
+export function windowLimitsModel(
+  window: Pick<ServerProviderUsageWindow, "id">,
+  model: string | null,
+): boolean {
+  if (!window.id.startsWith(CLAUDE_SCOPED_WINDOW_PREFIX)) return true;
+  return (
+    model !== null &&
+    claudeScopeToken(model).includes(window.id.slice(CLAUDE_SCOPED_WINDOW_PREFIX.length))
+  );
+}
+
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,
   now: number,
@@ -36,6 +51,7 @@ export function exhaustedUsageWindow(
     (window) =>
       (window.usedPercent ?? 0) >= 100 &&
       (model === undefined || window.modelIds === undefined || window.modelIds.includes(model)) &&
+      (model === undefined || windowLimitsModel(window, model)) &&
       (model === undefined ||
         window.providerIds === undefined ||
         window.providerIds.includes(model.split("/")[0] ?? "")) &&
@@ -115,6 +131,127 @@ export function resolveNewThreadModelSelection(input: {
     selection: input.fallbackSelection,
     fallback: { provider, resetsAt: window.resetsAt ?? null },
   };
+}
+
+const ACCOUNT_BALANCING_SETTINGS = {
+  claudeAgent: "balanceClaudeAccounts",
+  codex: "balanceCodexAccounts",
+} as const satisfies Record<string, keyof ServerSettings>;
+
+function accountBalancingEnabled(settings: ServerSettings, driver: string): boolean {
+  const key = ACCOUNT_BALANCING_SETTINGS[driver as keyof typeof ACCOUNT_BALANCING_SETTINGS];
+  return key !== undefined && settings[key];
+}
+
+export interface AccountHeadroom {
+  readonly remainingPercent: number;
+  /** The binding window: the most-used session or weekly window that limits the model. */
+  readonly window: ServerProviderUsageWindow;
+}
+
+/** Null when the account reports no session or weekly window for the model. */
+function accountHeadroom(
+  provider: ServerProvider,
+  model: string,
+  now: number,
+): AccountHeadroom | null {
+  let binding: AccountHeadroom | null = null;
+  for (const window of provider.usageLimits?.windows ?? []) {
+    if (window.kind !== "session" && window.kind !== "weekly") continue;
+    if (!windowLimitsModel(window, model) || window.modelIds?.includes(model) === false) continue;
+    // A window past its reset has refilled, whatever its last reading said.
+    const refilled = (resetMillis(window) ?? Infinity) <= now;
+    const remaining = refilled ? 100 : remainingPercent(window);
+    if (
+      binding === null ||
+      remaining < binding.remainingPercent ||
+      (remaining === binding.remainingPercent && resetOrder(window) < resetOrder(binding.window))
+    ) {
+      binding = { remainingPercent: remaining, window };
+    }
+  }
+  return binding;
+}
+
+const resetOrder = (window: ServerProviderUsageWindow) => resetMillis(window) ?? Infinity;
+
+/**
+ * The account of the selected provider with the most usage left for the selected model, as the
+ * Guild routes: accounts with known headroom first (most left, then soonest reset), then accounts
+ * that report no limits, such as API keys; exhausted accounts never. Null keeps `selection`.
+ */
+export function balanceAccount(input: {
+  readonly selection: ModelSelection;
+  readonly providers: readonly ServerProvider[];
+  readonly now: number;
+  readonly settings: ServerSettings;
+  readonly projectId?: ProjectId | null;
+}) {
+  const { selection, now } = input;
+  const from = input.providers.find((entry) => entry.instanceId === selection.instanceId);
+  if (!from || !accountBalancingEnabled(input.settings, from.driver)) return null;
+  const ranked = input.providers
+    .filter(
+      (provider) =>
+        provider.driver === from.driver &&
+        provider.enabled &&
+        provider.installed &&
+        provider.auth.status !== "unauthenticated" &&
+        isProviderAvailable(provider) &&
+        provider.models.some((model) => model.slug === selection.model) &&
+        resolveProjectProviderInstanceEnabled(
+          input.settings,
+          input.projectId ?? null,
+          provider.instanceId,
+        ) &&
+        !exhaustedUsageWindow(provider, now, selection.model),
+    )
+    .map((provider) => ({ provider, headroom: accountHeadroom(provider, selection.model, now) }))
+    // A fresh array from map, so sorting in place mutates nothing shared.
+    .sort((left, right) => {
+      const order =
+        left.headroom === null || right.headroom === null
+          ? Number(left.headroom === null) - Number(right.headroom === null)
+          : right.headroom.remainingPercent - left.headroom.remainingPercent ||
+            resetOrder(left.headroom.window) - resetOrder(right.headroom.window);
+      // A tie keeps the selected account.
+      return order || Number(right.provider === from) - Number(left.provider === from);
+    });
+  const best = ranked[0];
+  if (!best || best.provider === from) return null;
+  return {
+    selection: { ...selection, instanceId: best.provider.instanceId },
+    from,
+    to: best.provider,
+    headroom: best.headroom,
+    fromHeadroom: accountHeadroom(from, selection.model, now),
+  };
+}
+
+export type BalancedAccount = NonNullable<ReturnType<typeof balanceAccount>>;
+
+export const accountName = (provider: ServerProvider) =>
+  provider.displayName ?? PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
+
+const accountLeft = (provider: ServerProvider, headroom: AccountHeadroom | null) =>
+  `${accountName(provider)} ${
+    headroom === null
+      ? "reports no limits"
+      : `has ${headroom.remainingPercent}% left (${headroom.window.label})`
+  }`;
+
+/** "Work has 64% left (Weekly); Personal has 12% left (Session)." */
+export function balancedAccountReason(balanced: BalancedAccount): string {
+  return `${accountLeft(balanced.to, balanced.headroom)}; ${accountLeft(balanced.from, balanced.fromHeadroom)}.`;
+}
+
+/** What moving a limited thread to the balanced account keeps; accounts with separate homes hand it over. */
+export function balancedMoveDetail(balanced: BalancedAccount): string {
+  const left = accountLeft(balanced.to, balanced.headroom);
+  const group = balanced.from.continuation?.groupKey;
+  return group !== undefined && group === balanced.to.continuation?.groupKey
+    ? `${left} and continues this conversation.`
+    : `${left}. It keeps a separate history, so the thread's messages are handed over; the agent's reasoning and tool state are not.`;
 }
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";

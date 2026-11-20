@@ -32,6 +32,8 @@ type RecoveryProps = {
   recovery: OrchestrationV2LimitRecovery | null;
   timestampFormat: TimestampFormat;
   onChange: (recovery: OrchestrationV2LimitRecoveryUpdate) => Promise<void>;
+  /** Another account of the provider with usage left, when account balancing is on. */
+  moveTo?: { readonly label: string; readonly detail: string; readonly onMove: () => void };
 };
 
 export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBannerStackItem {
@@ -60,9 +62,16 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
     resumes && resetAt && snoozedUntil && Date.parse(snoozedUntil) > Date.parse(resetAt)
       ? snoozedUntil
       : resetAt;
-  const resetDescription = displayAt
+  const resetText = displayAt
     ? `${resumes ? "Resumes" : "Resets"} ${formatUpcomingTimestamp(displayAt, timestampFormat)}`
     : "Reset time unavailable; retry manually";
+  const { moveTo } = props;
+  const resetDescription = moveTo ? `${resetText}. ${moveTo.detail}` : resetText;
+  const moveAction = moveTo ? (
+    <InlineButton touchTarget="padded" onClick={moveTo.onMove}>
+      {moveTo.label}
+    </InlineButton>
+  ) : null;
   if (!chatGptLimit) {
     return {
       id: `usage-limit-recovery:${runId}`,
@@ -71,7 +80,12 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       icon: <GaugeIcon />,
       title: "Usage limit reached",
       description: resetDescription,
-      actions: recoveryActions,
+      actions: (
+        <>
+          {moveAction}
+          {recoveryActions}
+        </>
+      ),
     };
   }
   // OpenAI's partner guidelines specify this ChatGPT notice and its actions.
@@ -86,6 +100,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       : resetDescription,
     actions: (
       <>
+        {moveAction}
         {recoveryActions}
         {workspaceLimit ? (
           <Button size="xs" variant="ghost" onClick={copyAdminRequest}>
