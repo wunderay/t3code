@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { forkRelease, nextForkVersion } = require("./fork-release-version.cjs");
+const { androidVersionCode, forkRelease, nextForkVersion } = require("./fork-release-version.cjs");
 
 const tag = (name, sha = "old") => ({ name, commit: { sha } });
 
@@ -34,4 +34,18 @@ test("only main's tip is released", () => {
   assert.deepEqual(forkRelease({ ...args, sha: "new", mainTip: "new" }), { version: "0.1.1001" });
   assert.match(forkRelease({ ...args, sha: "old2", mainTip: "new" }).skip, /no longer the tip/);
   assert.match(forkRelease({ ...args, sha: "old", mainTip: "old" }).skip, /already released/);
+});
+
+test("the Android versionCode rises with every fork version", () => {
+  assert.equal(androidVersionCode("0.1.1001"), 101001);
+  const order = ["0.0.0", "0.1.1001", "0.1.1002", "0.1.1100", "0.2.0", "1.0.0", "20.999.99999"];
+  const codes = order.map(androidVersionCode);
+  assert.deepEqual(
+    [...codes].sort((a, b) => a - b),
+    codes,
+  );
+  assert.equal(new Set(codes).size, codes.length);
+  assert.ok(codes.at(-1) <= 2100000000);
+  assert.throws(() => androidVersionCode("21.0.0"), /No Android versionCode/);
+  assert.throws(() => androidVersionCode("0.1.1001-nightly.1"), /Unsupported fork version/);
 });

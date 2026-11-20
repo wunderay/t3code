@@ -1,0 +1,157 @@
+# Adds the Android app to every fork release (wunderay/t3code): when
+# release.yml publishes a release, this builds one installable APK of that
+# commit (.github/scripts/fork-android-apk.sh) and uploads it to the release,
+# with its line in SHA256SUMS. The official repository ships Android through
+# Google Play and never runs this.
+#
+# Signing secrets, optional: ANDROID_KEYSTORE_BASE64 (the keystore file,
+# base64), ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS. With them every
+# release is signed by one key and a phone updates in place; without them each
+# APK has a key of its own (see the script).
+name: Fork Android APK
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to add the APK to (for example v0.1.1001)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-android-apk-${{ inputs.tag || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Build and upload the APK
+    if: github.repository != 'pingdotgg/t3code' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # fork-release.yml tags the commit CI passed and dispatches release.yml at
+      # main, which is that commit, so the release's tag points at the run's head.
+      - id: release
+        name: Find the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -z "$TAG" ]; then
+            # Every tag, not one page: the tags API does not list the newest first.
+            TAG=$(gh api --paginate "repos/$GH_REPO/git/matching-refs/tags/v" \
+              --jq ".[] | select(.object.sha == \"$SHA\") | .ref | ltrimstr(\"refs/tags/\")" |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+            [ -n "$TAG" ] || { echo "No stable tag points at $SHA; nothing to add an APK to."; exit 0; }
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a stable fork tag"; exit 1; }
+          gh release view "$TAG" --json isDraft --jq .isDraft | grep -qx false ||
+            { echo "::error::$TAG has no published release"; exit 1; }
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -q -- '\.apk$'; then
+            echo "$TAG already has an APK."
+            exit 0
+          fi
+          { echo "tag=$TAG"; echo "version=${TAG#v}"; } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.release.outputs.tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      # The build runs dependency scripts, so it gets no token: the checkout's goes
+      # (as in mobile-dev-client.yml, where `persist-credentials: false` fails on
+      # the vendored gitlinks), and only the upload step below is given one.
+      - name: Drop checkout credentials
+        if: steps.release.outputs.tag
+        run: |
+          git config --local --get-regexp '^includeif\..*\.path$' | while read -r key file; do
+            rm -f "$file"
+            git config --local --unset-all "$key"
+          done
+          git config --local --name-only --get-regexp '^http\..*\.extraheader$' | while read -r key; do
+            git config --local --unset-all "$key"
+          done
+          rm -f "$RUNNER_TEMP"/git-credentials-*.config
+          if git config --local --get-regexp 'extraheader|includeif' || ls "$RUNNER_TEMP"/git-credentials-*.config 2>/dev/null; then
+            echo "::error::checkout credentials are still present"
+            exit 1
+          fi
+
+      # The runner's free disk is too small for the workspace, the NDK build and
+      # Gradle's caches together; these toolchains are never used here.
+      - name: Free disk space
+        if: steps.release.outputs.tag
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h "$GITHUB_WORKSPACE" | tail -n 1
+
+      - name: Setup dependencies
+        if: steps.release.outputs.tag
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/mobile...
+
+      - name: Setup Java
+        if: steps.release.outputs.tag
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Cache Gradle
+        if: steps.release.outputs.tag
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: fork-android-apk-gradle-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: fork-android-apk-gradle-
+
+      - name: Build the APK
+        if: steps.release.outputs.tag
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: bash .github/scripts/fork-android-apk.sh build "${{ steps.release.outputs.version }}" "$RUNNER_TEMP/apk"
+
+      # Only this step sees the key; the build above runs dependency code.
+      - id: build
+        name: Sign the APK
+        if: steps.release.outputs.tag
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: bash .github/scripts/fork-android-apk.sh sign "${{ steps.release.outputs.version }}" "$RUNNER_TEMP/apk"
+
+      - name: Upload to the release
+        if: steps.release.outputs.tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          APK: ${{ steps.build.outputs.apk }}
+          NAME: ${{ steps.build.outputs.name }}
+          KEY: ${{ steps.build.outputs.key }}
+        run: |
+          cd "$(dirname "$APK")"
+          gh release upload "$TAG" "$NAME" --clobber
+          # SHA256SUMS lists every asset; add the APK's line, replacing an old one.
+          # A failed download must stop here, or the upload would drop every other line.
+          gh release download "$TAG" --pattern SHA256SUMS --dir sums
+          [ -s sums/SHA256SUMS ] || { echo "::error::$TAG has an empty SHA256SUMS"; exit 1; }
+          { grep -v -- " $NAME\$" sums/SHA256SUMS || true; sha256sum "$NAME"; } > SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
+          if [ "$KEY" = one-off ]; then
+            echo "::warning::$NAME is signed with a one-off key: uninstall the previous APK before installing it. Add the ANDROID_KEYSTORE_* secrets so releases update in place."
+          fi
+          echo "Added $NAME to $TAG."

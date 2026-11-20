@@ -39,4 +39,17 @@ function forkRelease({ upstreamVersion, tags, sha, mainTip }) {
   return version ? { version } : { skip: `${sha} is already released.` };
 }
 
-module.exports = { forkRelease, nextForkVersion };
+/**
+ * The Android versionCode of fork version x.y.z: it must rise for a phone to update, and stay
+ * below Android's limit of 2100000000.
+ * @returns {number}
+ */
+function androidVersionCode(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) throw new Error(`Unsupported fork version: ${version}`);
+  const [x, y, z] = match.slice(1).map(Number);
+  if (x > 20 || y > 999 || z > 99999) throw new Error(`No Android versionCode for ${version}`);
+  return Math.max(1, x * 100000000 + y * 100000 + z);
+}
+
+module.exports = { androidVersionCode, forkRelease, nextForkVersion };
